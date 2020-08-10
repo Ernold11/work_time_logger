@@ -7,14 +7,16 @@ import threading
 import time
 import json
 import argparse
+import subprocess
 
 
+TXT_EDITOR = "notepad.exe"
 TRAY_TOOLTIP = 'Work time logger\n{}'
 FINISH_WORK = threading.Event()
 STOP_MODE = False
 TRAY_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
 FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.txt")
-OVERTIME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overtimes.txt")
+OVERTIMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overtimes.txt")
 
 
 def create_menu_item(menu, label, func):
@@ -59,7 +61,7 @@ class MyThread (threading.Thread):
 	    msg = "{}: {}\n".format(now_date, overtimes)
 
 	    try:
-		    with open(OVERTIME_PATH, "r") as f:
+		    with open(OVERTIMES_PATH, "r") as f:
 		        lines = f.readlines()
 		        if now_date in lines[-1]:
 		            lines[-1] = msg
@@ -68,7 +70,7 @@ class MyThread (threading.Thread):
 	    except:
 		    lines.append(msg)
 		
-	    with open(OVERTIME_PATH, "w") as f:
+	    with open(OVERTIMES_PATH, "w") as f:
 		    for line in lines:
 		        f.write("{}".format(line))
 		        print(line)
@@ -100,6 +102,9 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         menu.AppendSeparator()
         create_menu_item(menu, 'Show logs', self.load_today_logs)
         create_menu_item(menu, 'Show overtimes', self.show_overtimes)
+        menu.AppendSeparator()
+        create_menu_item(menu, 'Edit logs', self.edit_logs)
+        create_menu_item(menu, 'Edit overtimes', self.edit_overtimes)
         menu.AppendSeparator()
         create_menu_item(menu, 'Exit', self.on_exit)
 
@@ -283,7 +288,7 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         msg = ""
         
         try:
-            with open(OVERTIME_PATH, "r") as f:
+            with open(OVERTIMES_PATH, "r") as f:
                 for line in f.readlines():
                     if month in line:
                         msg = "{}{}".format(msg, line)
@@ -296,6 +301,20 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
             msg = "No overtimes in current month."
             
         wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
+        
+    def _edit_times(self, file_path):
+        try:
+            subprocess.run([TXT_EDITOR, file_path])
+        except Exception as exc:
+            print("Caugth exception: '{}'".format(exc))
+        
+        self.show_working_time(event=None, silent_mode=True)
+        
+    def edit_logs(self, event):
+        self._edit_times(FILE_PATH)
+            
+    def edit_overtimes(self, event):
+        self._edit_times(OVERTIMES_PATH)
         
     def on_exit(self, event, msgBox=True):
         FINISH_WORK.set()
