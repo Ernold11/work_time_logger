@@ -15,8 +15,40 @@ FINISH_WORK = threading.Event()
 STOP_MODE = False
 MSG_BOX_SHOWED = False
 TRAY_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
-FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.txt")
-OVERTIMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overtimes.txt")
+FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.json")
+OVERTIMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overtimes.json")
+
+
+class JsonHelpers:
+    @staticmethod
+    def read_file(file_path):
+        """
+        Read content from specific json file.
+        :param json_path: path to json file.
+        :return: loaded json content.
+        """
+        try:
+            with open(file_path, 'r') as fp:
+                return json.load(fp)
+        except Exception as exc:
+            wx.MessageBox(str(exc), "Error", wx.OK | wx.ICON_ERROR)
+            JsonHelpers.write_file(file_path, {})
+            return {}
+
+    @staticmethod
+    def write_file(file_path, data):
+        """
+        Write specific data into json file.
+
+        :param file_path: path to file where data will be written.
+        :param data: data to write into file
+        :return: None.
+        """
+        try:
+            with open(file_path, 'w') as fp:
+                json.dump(data, fp, indent=3)
+        except Exception as exc:
+            wx.MessageBox(str(exc), "Error", wx.OK | wx.ICON_ERROR)
 
 
 class MyThread(threading.Thread):
@@ -37,7 +69,6 @@ class MyThread(threading.Thread):
 
             if working_time > self.reference_time:
                 if not MSG_BOX_SHOWED:
-                    print(working_time)
                     wx.MessageBox("It's time to end your work.\n\n{}".format(working_time), 'Info',
                                   wx.OK | wx.ICON_INFORMATION)
                     MSG_BOX_SHOWED = True
@@ -51,25 +82,14 @@ class MyThread(threading.Thread):
     def save_overtimes(self, overtimes):
         now = datetime.datetime.now()
         now_date = str(now.strftime("%Y/%m/%d"))
-        lines = list()
-        msg = "{}: {}\n".format(now_date, overtimes)
 
-        try:
-            with open(OVERTIMES_PATH, "r") as f:
-                lines = f.readlines()
-                if now_date in lines[-1]:
-                    lines[-1] = msg
-                else:
-                    lines.append(msg)
-        except:
-            lines.append(msg)
+        data = JsonHelpers.read_file(OVERTIMES_PATH)
+        data[now_date] = overtimes
+        JsonHelpers.write_file(data)
 
-        with open(OVERTIMES_PATH, "w") as f:
-            for line in lines:
-                f.write("{}".format(line))
-                print(line)
-
-        print("SAVED_OVERTIMES: '{}'".format(msg))
+        data = JsonHelpers.read_file(FILE_PATH)
+        data[now_date][-1]["END"] = str(datetime.datetime.now().strftime("%H:%M:%S"))
+        JsonHelpers.write_file(data)
 
 
 class TaskBarIcon(wx.adv.TaskBarIcon):
@@ -88,6 +108,7 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         self.worker = MyThread(self._calculate_working_time, self.reference_time, self.show_working_time, self.set_icon)
         self.worker.start()
         self.log_label = "Log break"
+        self.now_date = str(datetime.datetime.now().strftime("%Y/%m/%d"))
 
     def create_menu_item(self, menu, label, func):
         item = wx.MenuItem(menu, -1, label)
@@ -118,15 +139,15 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         pass
 
     def load_today_logs(self, event):
-        date_exists = False
         msg = ""
 
-        with open(FILE_PATH, "r") as f:
-            for line in f.readlines():
-                if self.now_date in line:
-                    date_exists = True
-                if date_exists:
-                    msg = "{}{}".format(msg, line)
+        data = JsonHelpers.read_file(FILE_PATH)
+        date_exists = self._check_date_exist(data)
+
+        if date_exists:
+            for elements in data[self.now_date]:
+                for element_name, element_value in elements.items():
+                    msg = "{}{}:{}\n".format(msg, element_name, element_value)
 
         if date_exists:
             wx.MessageBox("Today logged times:\n\n{}".format(msg), 'Info', wx.OK | wx.ICON_INFORMATION)
@@ -138,55 +159,37 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         self.now_date = str(now.strftime("%Y/%m/%d"))
         now_time = str(now.strftime("%H:%M:%S"))
 
-        date_exists, last_time = self._get_last_time_if_exist()
-        self._write_time_to_file(date_exists, now_time, last_time, first_run)
-
-        with open(FILE_PATH) as f:
-            for line in f.readlines():
-                print("{}\n".format(line))
+        self._write_time_to_file(now_time, first_run)
 
         if msgBox:
             wx.MessageBox("Logged time:\n\n{} {}".format(self.now_date, now_time), 'Info', wx.OK | wx.ICON_INFORMATION)
 
-    def _get_last_time_if_exist(self):
-        date_exists = False
-        last_time = None
+    def _check_date_exist(self, data):
+        if self.now_date in data.keys():
+            return True
 
-        try:
-            with open(FILE_PATH, "r") as f:
-                for line in f.readlines():
-                    line = line.replace("\t", "")
+        return False
 
-                    if self.now_date in line:
-                        date_exists = True
-                    if line and line.strip() and date_exists:
-                        last_time = line.split(' ')[0].strip()
-            print("LAST TIME: '{}'".format(last_time))
-        except:
-            pass
+    def _write_time_to_file(self, now_time, first_run):
+        data = JsonHelpers.read_file(FILE_PATH)
+        self.log_label = "Log break"
 
-        return date_exists, last_time
-
-    def _write_time_to_file(self, date_exists, now_time, last_time, first_run):
-        arrow = "-->"
-        skip = False
-
-        with open(FILE_PATH, "a") as f:
-            if not date_exists:
-                f.write("{}\n".format(self.now_date))
-
-            if last_time == "-->" and not first_run:
-                arrow = "<--"
-            elif last_time == "-->" and first_run:
-                skip = True
-
-            if arrow == "-->":
-                self.log_label = "Log break"
+        if self._check_date_exist(data):
+            if data[self.now_date]:
+                if data[self.now_date][-1]["END"]:
+                    data[self.now_date].append({"START": now_time, "END": ""})
+                else:
+                    if not first_run:
+                        data[self.now_date][-1]["END"] = now_time
+                        self.log_label = "Log work"
             else:
-                self.log_label = "Log work"
+                data[self.now_date] = list()
+                data[self.now_date].append({"START": now_time, "END": ""})
+        else:
+            data[self.now_date] = list()
+            data[self.now_date].append({"START": now_time, "END": ""})
 
-            if not skip:
-                f.write("\t{} {}\n".format(arrow, now_time))
+        JsonHelpers.write_file(FILE_PATH, data)
 
     def show_working_time(self, event, silent_mode=False):
         working_time = self._calculate_working_time()
@@ -194,7 +197,7 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
 
         delta = self._calculate_time_left(working_time, self.reference_time)
         self.set_icon()
-        end_time = now = datetime.datetime.now() + delta
+        end_time = datetime.datetime.now() + delta
 
         end_time = end_time.strftime("%H:%M:%S")
 
@@ -223,77 +226,40 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         return to_go
 
     def _calculate_working_time(self):
-        start, end, working_time = self._get_working_time_details()
+        working_time = datetime.timedelta()
+        data = JsonHelpers.read_file(FILE_PATH)
 
-        if start and not end:
-            now = datetime.datetime.now()
-            end = str(now.strftime("%H:%M:%S"))
-            end = datetime.datetime.strptime(end, '%H:%M:%S')
+        if self._check_date_exist(data):
+            for elements in data[self.now_date]:
+                if elements["END"]:
+                    end = datetime.datetime.strptime(elements["END"], '%H:%M:%S')
+                    start = datetime.datetime.strptime(elements["START"], '%H:%M:%S')
+                    delta = end - start
+                else:
+                    now = datetime.datetime.now().strftime("%H:%M:%S")
+                    current_time = datetime.datetime.strptime(now, '%H:%M:%S')
+                    start = datetime.datetime.strptime(elements["START"], '%H:%M:%S')
+                    delta = current_time - start
 
-            curr_delta = end - start
-            working_time += curr_delta
-        elif not start:
+                working_time += delta
+        else:
             msg = "Not found start time in current day."
             wx.MessageBox(msg, 'Info', wx.OK | wx.ICON_INFORMATION)
             global MSG_BOX_SHOWED
             MSG_BOX_SHOWED = False
             self.log_work(msgBox=False)
 
-        print("FINAL DELTA: '{}'\n".format(working_time))
-
         return working_time
-
-    def _get_working_time_details(self):
-        now = datetime.datetime.now()
-        now_date = str(now.strftime("%Y/%m/%d"))
-        working_time = datetime.timedelta()
-        date_exists = False
-        start = None
-        end = None
-
-        with open(FILE_PATH, "r") as f:
-            for line in f.readlines():
-                if now_date in line:
-                    date_exists = True
-                    continue
-                if date_exists:
-                    start, end, working_time = self._calculate_working_time_details(start, end, working_time, line)
-
-        return start, end, working_time
-
-    def _calculate_working_time_details(self, start, end, working_time, line):
-        if "-->" in line:
-            start = line.replace("-->", "").strip()
-            print("START_TIME: '{}'".format(start))
-            start = datetime.datetime.strptime(start, '%H:%M:%S')
-        elif "<--" in line:
-            end = line.replace("<--", "").strip()
-            print("END_TIME: '{}'".format(end))
-            end = datetime.datetime.strptime(end, '%H:%M:%S')
-
-        if start and end:
-            curr_delta = end - start
-            start = None
-            end = None
-
-            print("DELTA: '{}'".format(str(curr_delta)))
-            working_time += curr_delta
-
-        return start, end, working_time
 
     def show_overtimes(self, event):
         now = datetime.datetime.now()
         month = str(now.strftime("%Y/%m"))
-        lines = list()
         msg = ""
 
-        try:
-            with open(OVERTIMES_PATH, "r") as f:
-                for line in f.readlines():
-                    if month in line:
-                        msg = "{}{}".format(msg, line)
-        except:
-            pass
+        data = JsonHelpers.read_file(OVERTIMES_PATH)
+        for date in data.keys():
+            if month in date:
+                msg = "{}{}: {}\n".format(msg, date, data[date])
 
         if msg:
             msg = "Overtimes in: '{}'\n\n{}".format(month, msg)
@@ -306,7 +272,7 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
         try:
             subprocess.run([TXT_EDITOR, file_path])
         except Exception as exc:
-            print("Caught exception: '{}'".format(exc))
+            wx.MessageBox(str(exc), "Error", wx.OK | wx.ICON_ERROR)
 
         self.show_working_time(event=None, silent_mode=True)
 
@@ -325,13 +291,14 @@ class TaskBarIcon(wx.adv.TaskBarIcon):
 
 class App(wx.App):
     def OnInit(self):
+        # locale = wx.Locale("en-US")
         frame = wx.Frame(None)
         self.SetTopWindow(frame)
         self.task_bar_icon = TaskBarIcon(frame, STOP_MODE)
         return True
 
-    def InitLocale(self):
-        self.ResetLocale()
+    # def InitLocale(self):
+    #     self.ResetLocale()
 
 
 if __name__ == '__main__':
