@@ -84,12 +84,12 @@ class MyThread(threading.Thread):
         now_date = str(now.strftime("%Y/%m/%d"))
 
         data = JsonHelpers.read_file(OVERTIMES_PATH)
-        data[now_date] = overtimes
-        JsonHelpers.write_file(data)
+        data[now_date] = str(overtimes)
+        JsonHelpers.write_file(OVERTIMES_PATH, data)
 
         data = JsonHelpers.read_file(FILE_PATH)
         data[now_date][-1]["END"] = str(datetime.datetime.now().strftime("%H:%M:%S"))
-        JsonHelpers.write_file(data)
+        JsonHelpers.write_file(FILE_PATH, data)
 
 
 class TaskBarIcon(wx.adv.TaskBarIcon):
