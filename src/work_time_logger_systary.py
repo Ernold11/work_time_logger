@@ -314,7 +314,6 @@ class App:
 
     def _edit_overtimes(self):
         self.time.edit_overtimes()
-        self._show_tray_message("LOL")
         self._update_tooltip_text()
 
     def _update_tooltip_text(self):
@@ -364,7 +363,7 @@ class App:
         if working_time > self.time.reference_time:
             if not MSG_BOX_SHOWED:
                 msg = "It's time to end your work.\n\n{}".format(working_time)
-                self._show_tray_message(text=msg)
+                MessageBox.show(text=msg)
                 MSG_BOX_SHOWED = True
             overtimes = working_time - self.time.reference_time
 
