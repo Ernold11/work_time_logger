@@ -229,7 +229,12 @@ class Time:
         try:
             subprocess.run([TXT_EDITOR, file_path])
         except Exception as exc:
-            wx.MessageBox(str(exc), "Error", wx.OK | wx.ICON_ERROR)
+            MessageBox.show(
+                text=str(exc),
+                title="Error",
+                icon=QMessageBox.Critical,
+                detailed_text=str(type(exc))
+            )
 
         self.show_working_time(silent_mode=True)
 
