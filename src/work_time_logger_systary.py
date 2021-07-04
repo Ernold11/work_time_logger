@@ -4,8 +4,12 @@ import datetime
 import os
 import json
 import subprocess
+import psutil
+import win32process
 
-from PySide2.QtGui import QIcon
+from win32gui import GetForegroundWindow
+from pynput import keyboard, mouse
+from PySide2.QtGui import QIcon, QFont
 from PySide2.QtWidgets import QSystemTrayIcon, QMenu, QApplication, QAction, QMessageBox, QErrorMessage
 from PySide2.QtCore import QRunnable, QTimer
 
@@ -16,6 +20,7 @@ MSG_BOX_SHOWED = False
 TRAY_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.png')
 FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log.json")
 OVERTIMES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overtimes.json")
+ACTIVITY_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "activity_logs.json")
 PROGRAM_NAME = "Work Time Logger"
 VERSION = "ver. 0.0.1"
 
@@ -28,6 +33,7 @@ class MessageBox:
         msg.setText(text)
         msg.setWindowTitle(title)
         msg.setIcon(icon)
+        msg.setFont(QFont('Consolas', 9))
 
         if detailed_text:
             msg.setDetailedText(detailed_text)
@@ -83,11 +89,114 @@ class JsonHelpers:
             )
 
 
-class Worker(QRunnable):
-    def __init__(self, time, update_tooltip_text):
-        super(Worker, self).__init__()
-        self.time = time
-        self.update_tooltip_text = update_tooltip_text
+class ActivityLogger:
+    def __init__(self):
+        now = datetime.datetime.now()
+        self.now_date = str(now.strftime("%Y/%m/%d"))
+        self.keyboard_listener = self._set_keyboard_listener()
+        self.keyboard_listener.start()
+
+        self.mouse_listener = self._set_mouse_listener()
+        self.mouse_listener.start()
+
+        self.process_time = JsonHelpers.read_file(ACTIVITY_LOG_PATH)
+        self.activity_detected = False
+
+        self.counter = 0
+
+    def _set_keyboard_listener(self):
+        listener = keyboard.Listener(
+            on_press=self._set_activity,
+            on_release=self._set_activity
+        )
+
+        return listener
+
+    def _set_mouse_listener(self):
+        listener = mouse.Listener(
+            on_move=self._set_activity,
+            on_click=self._set_activity,
+            on_scroll=self._set_activity
+        )
+
+        return listener
+
+    def _set_activity(self, *args, **kwargs):
+        self.activity_detected = True
+
+    def _detect_current_application(self):
+        try:
+            now = datetime.datetime.now()
+            self.now_date = str(now.strftime("%Y/%m/%d"))
+            current_app = psutil.Process(
+                win32process.GetWindowThreadProcessId(GetForegroundWindow())[1]).name().replace(
+                ".exe", "")
+
+            if self.now_date not in self.process_time.keys():
+                self.process_time[self.now_date] = {}
+
+            if current_app not in self.process_time[self.now_date].keys():
+                self.process_time[self.now_date][current_app] = {"active": 0, "inactive": 0}
+
+            if self.activity_detected:
+                self.process_time[self.now_date][current_app]["active"] = \
+                    self.process_time[self.now_date][current_app]["active"] + 1
+            else:
+                self.process_time[self.now_date][current_app]["inactive"] = \
+                    self.process_time[self.now_date][current_app]["inactive"] + 1
+        except Exception as exc:
+            if (exc.__class__ != psutil.NoSuchProcess) and ("pid" not in str(exc)):
+                MessageBox.show(
+                    text=str(exc),
+                    title="Error",
+                    icon=QMessageBox.Critical,
+                    detailed_text=str(type(exc))
+                )
+
+        self._calculate_summary_time()
+
+        self.activity_detected = False
+
+    def _calculate_summary_time(self):
+        summary = {"active": 0, "inactive": 0}
+
+        self.process_time[self.now_date].pop("Summary", None)
+
+        for time in self.process_time[self.now_date].values():
+            summary["active"] += time["active"]
+            summary["inactive"] += time["inactive"]
+
+        self.process_time[self.now_date]["Summary"] = summary
+
+    def show_activity(self):
+        msg = "Application usage:\n"
+        self._calculate_summary_time()
+        data = self.process_time[self.now_date]
+
+        sorted_keys = sorted(data, key=lambda x: (data[x]['active']), reverse=True)
+
+        for key in sorted_keys:
+            converted_active = str(datetime.timedelta(seconds=data[key]["active"]))
+            converted_inactive = str(datetime.timedelta(seconds=data[key]["inactive"]))
+            if key != "Summary":
+                msg = "{}\n{:<20}\tactive: {:<6}\tinactive: {}".format(msg, key, converted_active, converted_inactive)
+
+        converted_active = str(datetime.timedelta(seconds=data["Summary"]["active"]))
+        converted_inactive = str(datetime.timedelta(seconds=data["Summary"]["inactive"]))
+        msg = "{}\n\n{:<20}\tactive: {:<6}\tinactive: {}".format(msg, "Summary", converted_active, converted_inactive)
+
+        MessageBox.show(text=msg)
+        JsonHelpers.write_file(ACTIVITY_LOG_PATH, self.process_time)
+
+    def run(self):
+        self.counter = 0
+
+        self._detect_current_application()
+        self.counter += 1
+
+        if not self.counter % 60:
+            JsonHelpers.write_file(ACTIVITY_LOG_PATH, self.process_time)
+            self.counter = 0
 
 
 class Time:
@@ -95,13 +204,16 @@ class Time:
         self.reference_time = datetime.timedelta(minutes=0, hours=8)
         self.now_date = ""
         self.time_left = ""
+        self.is_overtime = False
+        self.working_time = JsonHelpers.read_file(FILE_PATH)
+        self.overtimes = JsonHelpers.read_file(OVERTIMES_PATH)
 
-    def log_time(self, first_run=False, msg_box=True):
+    def log_time(self, first_run=False, msg_box=True, exit=False):
         now = datetime.datetime.now()
         self.now_date = str(now.strftime("%Y/%m/%d"))
         now_time = str(now.strftime("%H:%M:%S"))
 
-        self._write_time_to_file(now_time, first_run)
+        self._write_time_to_file(now_time, first_run, exit)
 
         msg = "Logged time:\n\n{} {}".format(self.now_date, now_time)
 
@@ -114,36 +226,35 @@ class Time:
 
         return False
 
-    def _write_time_to_file(self, now_time, first_run):
-        data = JsonHelpers.read_file(FILE_PATH)
+    def _write_time_to_file(self, now_time, first_run, exit):
         self.log_label = "Log break"
 
-        if self._check_date_exist(data):
-            if data[self.now_date]:
-                if data[self.now_date][-1]["END"]:
-                    data[self.now_date].append({"START": now_time, "END": ""})
+        if self._check_date_exist(self.working_time):
+            if self.working_time[self.now_date]:
+                if self.working_time[self.now_date][-1]["END"]:
+                    if not exit:
+                        self.working_time[self.now_date].append({"START": now_time, "END": ""})
                 else:
                     if not first_run:
-                        data[self.now_date][-1]["END"] = now_time
+                        self.working_time[self.now_date][-1]["END"] = now_time
                         self.log_label = "Log work"
             else:
-                data[self.now_date] = list()
-                data[self.now_date].append({"START": now_time, "END": ""})
+                self.working_time[self.now_date] = list()
+                self.working_time[self.now_date].append({"START": now_time, "END": ""})
         else:
-            data[self.now_date] = list()
-            data[self.now_date].append({"START": now_time, "END": ""})
+            self.working_time[self.now_date] = list()
+            self.working_time[self.now_date].append({"START": now_time, "END": ""})
 
-        JsonHelpers.write_file(FILE_PATH, data)
+        JsonHelpers.write_file(FILE_PATH, self.working_time)
 
     def get_today_logs(self):
         msg = "Not logged any time!"
 
-        data = JsonHelpers.read_file(FILE_PATH)
-        date_exists = self._check_date_exist(data)
+        date_exists = self._check_date_exist(self.working_time)
 
         if date_exists:
             msg = ""
-            for elements in data[self.now_date]:
+            for elements in self.working_time[self.now_date]:
                 for element_name, element_value in elements.items():
                     msg = "{}{}:{}\n".format(msg, element_name, element_value)
 
@@ -151,8 +262,8 @@ class Time:
 
     def show_working_time(self, silent_mode=False):
         working_time = self._calculate_working_time()
-        msg = "Summary working time:\n\nWorking time: {}\n".format(working_time)
-        overtime = False
+        msg = "Today:\n\n{:<20} {}\n".format("Working time:", working_time)
+        self.is_overtime = False
 
         delta = self._calculate_time_left(working_time, self.reference_time)
         end_time = datetime.datetime.now() + delta
@@ -161,17 +272,54 @@ class Time:
 
         if working_time > self.reference_time:
             delta = working_time - self.reference_time
-            overtime = True
+            self.is_overtime = True
 
         if working_time:
-            if not overtime:
-                msg = "{}Time left: {}\nEstimated end work: {}\n".format(msg, delta, end_time)
+            if not self.is_overtime:
+                msg = "{}{:<20} {}\n{:<20} {}\n".format(msg, "Time left:", delta, "Estimated end work:", end_time)
                 self.time_left = "Time left: {}".format(delta)
-            elif overtime:
-                msg = "{}Overtimes: {}".format(msg, delta)
+            elif self.is_overtime:
+                msg = "{}{:<20} {}".format(msg, "Overtimes:", delta)
                 self.time_left = "Overtimes: {}".format(delta)
+
+        month_working_time = self._calculate_summary_working_time()
+        msg = "{}\nCurrent month:\n\n{:<20} {}\n".format(msg, "Working time:", month_working_time)
+
         if not silent_mode:
             MessageBox.show(text=msg)
+
+    def _calculate_summary_working_time(self):
+        now = datetime.datetime.now()
+        month = "{}/".format(now.strftime("%Y/%m"))
+        working_time = datetime.timedelta()
+
+        current_month_days = [day for day in self.working_time.keys() if month in day]
+
+        for day in current_month_days:
+            for elements in self.working_time[day]:
+                if elements["END"]:
+                    end = datetime.datetime.strptime(elements["END"], '%H:%M:%S')
+                    start = datetime.datetime.strptime(elements["START"], '%H:%M:%S')
+                    delta = end - start
+                else:
+                    now = datetime.datetime.now().strftime("%H:%M:%S")
+                    current_time = datetime.datetime.strptime(now, '%H:%M:%S')
+                    start = datetime.datetime.strptime(elements["START"], '%H:%M:%S')
+                    delta = current_time - start
+
+                working_time += delta
+
+        working_time = self._convert_timedelta(working_time)
+
+        return working_time
+
+    def _convert_timedelta(self, duration):
+        days, seconds = duration.days, duration.seconds
+        hours = days * 24 + seconds // 3600
+        minutes = (seconds % 3600) // 60
+        seconds = (seconds % 60)
+
+        return "{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds)
 
     def _calculate_time_left(self, working_time=None, reference_time=None):
         if not (working_time and reference_time):
@@ -184,10 +332,9 @@ class Time:
 
     def _calculate_working_time(self):
         working_time = datetime.timedelta()
-        data = JsonHelpers.read_file(FILE_PATH)
 
-        if self._check_date_exist(data):
-            for elements in data[self.now_date]:
+        if self._check_date_exist(self.working_time):
+            for elements in self.working_time[self.now_date]:
                 if elements["END"]:
                     end = datetime.datetime.strptime(elements["END"], '%H:%M:%S')
                     start = datetime.datetime.strptime(elements["START"], '%H:%M:%S')
@@ -213,10 +360,9 @@ class Time:
         month = str(now.strftime("%Y/%m"))
         msg = ""
 
-        data = JsonHelpers.read_file(OVERTIMES_PATH)
-        for date in data.keys():
+        for date in self.overtimes.keys():
             if month in date:
-                msg = "{}{}: {}\n".format(msg, date, data[date])
+                msg = "{}{}: {}\n".format(msg, date, self.overtimes[date])
 
         if msg:
             msg = "Overtimes in: '{}'\n\n{}".format(month, msg)
@@ -236,6 +382,7 @@ class Time:
                 detailed_text=str(type(exc))
             )
 
+        self.working_time = JsonHelpers.read_file(file_path)
         self.show_working_time(silent_mode=True)
 
     def edit_logs(self):
@@ -253,12 +400,17 @@ class App:
         self.time = Time()
         self.time.log_time(msg_box=False, first_run=True)
 
+        self.activity = ActivityLogger()
+
         self.tray = self._prepare_tray_menu()
         self._update_tooltip_text()
         self.tray.show()
 
-        self.timer = self._prepare_overtime_check_timer()
-        self.timer.start()
+        self.overtime_timer = self._prepare_overtime_check_timer()
+        self.overtime_timer.start()
+
+        self.activity_timer = self._prepare_activity_logger_timer()
+        self.activity_timer.start()
 
     def _prepare_tray_menu(self):
         tray = QSystemTrayIcon(QIcon("icon.png"), self.app)
@@ -271,6 +423,7 @@ class App:
 
         menu = self._set_tray_menu_item(menu, "Show logs", self._get_today_log)
         menu = self._set_tray_menu_item(menu, "Show overtimes", self._show_overtimes)
+        menu = self._set_tray_menu_item(menu, "Show activity", self._show_activity)
 
         menu.addSeparator()
 
@@ -296,6 +449,13 @@ class App:
 
         return timer
 
+    def _prepare_activity_logger_timer(self):
+        timer = QTimer()
+        timer.setInterval(1 * 1000)
+        timer.timeout.connect(self._check_activity)
+
+        return timer
+
     def _log_time(self, first_run=False):
         self.time.log_time(first_run=first_run)
         self._update_tooltip_text()
@@ -312,6 +472,9 @@ class App:
     def _show_overtimes(self):
         self.time.show_overtimes()
         self._update_tooltip_text()
+
+    def _show_activity(self):
+        self.activity.show_activity()
 
     def _edit_logs(self):
         self.time.edit_logs()
@@ -357,7 +520,7 @@ class App:
     def run(self):
         self._show_tray_message("Work Time Logger", "Application started.")
         status = self.app.exec_()
-        self.time.log_time()
+        self.time.log_time(exit=True)
 
         sys.exit(status)
 
@@ -375,17 +538,18 @@ class App:
             self._save_overtimes(overtimes)
         self._update_tooltip_text()
 
+    def _check_activity(self):
+        self.activity.run()
+
     def _save_overtimes(self, overtimes):
         now = datetime.datetime.now()
         now_date = str(now.strftime("%Y/%m/%d"))
 
-        data = JsonHelpers.read_file(OVERTIMES_PATH)
-        data[now_date] = str(overtimes)
-        JsonHelpers.write_file(OVERTIMES_PATH, data)
+        self.time.overtimes[now_date] = str(overtimes)
+        JsonHelpers.write_file(OVERTIMES_PATH, self.time.overtimes)
 
-        data = JsonHelpers.read_file(FILE_PATH)
-        data[now_date][-1]["END"] = str(datetime.datetime.now().strftime("%H:%M:%S"))
-        JsonHelpers.write_file(FILE_PATH, data)
+        self.time.working_time[now_date][-1]["END"] = str(datetime.datetime.now().strftime("%H:%M:%S"))
+        JsonHelpers.write_file(FILE_PATH, self.time.working_time)
 
 
 if __name__ == '__main__':
