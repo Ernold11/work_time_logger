@@ -65,7 +65,25 @@ class JsonHelpers:
                 icon=QMessageBox.Critical,
                 detailed_text=str(type(exc))
             )
-            JsonHelpers.write_file(file_path, {})
+            if (exc.__class__ == IOError):
+                JsonHelpers.write_file(file_path, {})
+            else:
+                MessageBox.show(
+                    text="Work Time Logger will open incorrect file.\nPlease validate data, make necessary changes, save and start application again.",
+                    title="Error",
+                    icon=QMessageBox.Critical
+                )
+                try:
+                    subprocess.run([TXT_EDITOR, file_path])
+                except Exception as exc:
+                    MessageBox.show(
+                        text=str(exc),
+                        title="Error",
+                        icon=QMessageBox.Critical,
+                        detailed_text=str(type(exc))
+                    )
+                
+                sys.exit(1)
             return {}
 
     @staticmethod
